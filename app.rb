@@ -1,6 +1,6 @@
+require 'monitor'
 require 'set'
 require 'pp'
-require 'thread'
 require 'uri'
 require 'nokogiri'
 require 'httparty'
@@ -28,17 +28,6 @@ class Set
     key = pick
     @hash.delete(key)
     key
-  end
-end
-
-class Queue
-  def to_a
-    r = []
-    begin
-      r << deq(true)
-    rescue ThreadError
-    end
-    return r
   end
 end
 
@@ -76,13 +65,19 @@ class Nokogiri::HTML::Document
   end
 end
 
+# can't put in scraper because it can't be marshal'd
 class Scraper
+
+  attr_accessor :root_url
 
   def initialize root_url
     @root_url = root_url
     @root_url_host = URI.parse(@root_url).host
     @root_url_scheme = URI.parse(@root_url).scheme
-    @scrape_queue = Queue.new
+    @save_path = self.class.save_path @root_url
+    @save_path.extend MonitorMixin
+    @scrape_queue = []
+    @scrape_queue.extend MonitorMixin
     @found_emails = Set.new
     @seen_urls = Set.new
   end
@@ -93,6 +88,7 @@ class Scraper
     begin
       loop do
         scrape_next_page
+        save_to_disk
       end
     rescue NoMorePages
       puts "Exhausted pages"
@@ -100,11 +96,22 @@ class Scraper
     @found_emails.to_a
   end
 
+  def save_to_disk
+    @save_path.synchronize do
+      puts "Saving to disk [#{self}]: #{@root_url} #{@save_path}"
+      File.open(@save_path, 'w') do |f|
+        f.write Marshal.dump(self)
+      end
+    end
+  end
+
   private
 
   def next_url
-    puts "Queue Length: #{@scrape_queue.length}"
-    @scrape_queue.pop(true) rescue nil
+    @scrape_queue.synchronize do
+      puts "Queue Length: #{@scrape_queue.length}"
+      @scrape_queue.shift rescue nil
+    end
   end
 
   def url_within_root url
@@ -139,7 +146,9 @@ class Scraper
     return nil if skip_url? link
     if @seen_urls.add? link
       puts "Adding url: #{link}"
-      @scrape_queue << link
+      @scrape_queue.synchronize do
+        @scrape_queue << link
+      end
       return link
     else
       return nil
@@ -163,6 +172,7 @@ class Scraper
   end
 
   class << self
+
     def probably_not_html url
       bad_extensions = ['jpeg','jpg','pdf','png','css','js','coffee','gif']
       bad_extensions = bad_extensions.map{|e| [e,e.upcase]}.flatten
@@ -204,6 +214,21 @@ class Scraper
     def should_scrape_emails? url
       true
     end
+
+    def save_path url
+      hash = Digest::SHA2.hexdigest url
+      path = File.join File.absolute_path('.'), 'data', hash
+    end
+
+    def load_from_disk root_url
+      path = save_path root_url
+      puts "Loading from disk: #{root_url} #{path}"
+      return nil unless File.exists? path
+      File.open(path) do |f|
+        return Marshal.load f.read
+      end
+    end
+
   end
 end
 
@@ -215,7 +240,7 @@ class ProfileScraper < Scraper
       last = pieces.last
       ends_in_int = last.to_i.to_s == last
       member_page = url.include?('member.php') || ends_in_int
-      excluded = ['list','friends','tags','faqs',
+      excluded = ['list','friends','tags','faqs','blocked',
                   'casting','contests','pic','page']
       off_limits = excluded.select{|e| pieces.include? e}.to_a.length > 0
       member_page && !off_limits
@@ -227,6 +252,7 @@ class ProfileScraper < Scraper
 end
 
 
+
 root_url = ARGV.shift rescue nil
 proxy_host = ARGV.shift rescue nil
 proxy_port = ARGV.shift rescue nil
@@ -235,6 +261,8 @@ if proxy_host && proxy_port
   Requester.http_proxy proxy_host, proxy_port
 end
 
+scraper = ProfileScraper.load_from_disk root_url
+scraper ||= ProfileScraper.new root_url
+emails = scraper.scrape
 
-emails = ProfileScraper.new(root_url).scrape
 puts "--output--\n#{emails.join("\n")}"
