@@ -1,3 +1,4 @@
+require 'json'
 require 'monitor'
 require 'set'
 require 'pp'
@@ -74,8 +75,6 @@ class Scraper
     @root_url = root_url
     @root_url_host = URI.parse(@root_url).host
     @root_url_scheme = URI.parse(@root_url).scheme
-    @save_path = self.class.save_path @root_url
-    @save_path.extend MonitorMixin
     @scrape_queue = []
     @scrape_queue.extend MonitorMixin
     @found_emails = Set.new
@@ -96,16 +95,11 @@ class Scraper
     @found_emails.to_a
   end
 
-  def save_to_disk
-    @save_path.synchronize do
-      puts "Saving to disk [#{self}]: #{@root_url} #{@save_path}"
-      File.open(@save_path, 'w') do |f|
-        f.write Marshal.dump(self)
-      end
-    end
-  end
-
   private
+
+  def save_to_disk
+    ScrapeSaver.save_to_disk self
+  end
 
   def next_url
     @scrape_queue.synchronize do
@@ -215,22 +209,10 @@ class Scraper
       true
     end
 
-    def save_path url
-      hash = Digest::SHA2.hexdigest url
-      path = File.join File.absolute_path('.'), 'data', hash
-    end
-
-    def load_from_disk root_url
-      path = save_path root_url
-      puts "Loading from disk: #{root_url} #{path}"
-      return nil unless File.exists? path
-      File.open(path) do |f|
-        return Marshal.load f.read
-      end
-    end
 
   end
 end
+
 
 class ProfileScraper < Scraper
   class << self
@@ -252,6 +234,69 @@ class ProfileScraper < Scraper
 end
 
 
+class ScrapeSaver
+
+  @@to_save = :@scrape_queue, :@found_emails, :@seen_urls, :@root_url
+  @@to_save.extend MonitorMixin
+
+  class << self
+
+    def save_path url
+      hash = Digest::SHA2.hexdigest url
+      path = File.join File.absolute_path('.'), 'data', hash
+    end
+
+    def save_to_disk scraper
+      @@to_save.synchronize do
+        save_path = save_path scraper.root_url
+        root_url = scraper.root_url
+        to_save = Hash[ 
+          @@to_save.map { |attr| 
+            [ attr, 
+              scraper.instance_eval { 
+                v = instance_variable_get attr
+                v = v.to_a if v.kind_of? Set
+                v
+              }
+            ] 
+          }
+        ]
+        puts "Saving to disk [#{self}]: #{root_url} #{save_path}"
+        File.open(save_path, 'w') do |f|
+          JSON.dump(to_save, f)
+        end
+      end
+    end
+
+    def load_from_disk root_url, cls=Scraper
+      @@to_save.synchronize do
+        path = save_path root_url
+        puts "Loading from disk: #{root_url} #{path}"
+        return nil unless File.exists? path
+        data = nil
+        File.open(path) do |f|
+          data = JSON.load(f.read)
+        end
+        obj = cls.new root_url
+        data.each do |attr, value|
+          obj.instance_eval do
+            existing = instance_variable_get attr
+            case existing
+            when Set, Array
+              value.each { |v| existing << v }
+            when Hash
+              existing.merge! value
+            end
+          end
+        end
+        return obj
+      end
+    end
+
+  end
+end
+
+
 
 root_url = ARGV.shift rescue nil
 proxy_host = ARGV.shift rescue nil
@@ -261,8 +306,9 @@ if proxy_host && proxy_port
   Requester.http_proxy proxy_host, proxy_port
 end
 
-scraper = ProfileScraper.load_from_disk root_url
+scraper = ScrapeSaver.load_from_disk root_url, ProfileScraper
 scraper ||= ProfileScraper.new root_url
+
 emails = scraper.scrape
 
 puts "--output--\n#{emails.join("\n")}"
