@@ -5,6 +5,7 @@ require 'pp'
 require 'uri'
 require 'nokogiri'
 require 'httparty'
+require 'thread'
 require_relative 'email_address_validator/email_address_validator'
 require_relative 'email_address_validator/regexp.rb'
 
@@ -86,13 +87,17 @@ class Scraper
     add_url @root_url
     begin
       loop do
-        scrape_next_page
-        save_to_disk
+        scrape_cycle
       end
     rescue NoMorePages
       puts "Exhausted pages"
     end
     @found_emails.to_a
+  end
+
+  def scrape_cycle
+    scrape_next_page
+    save_to_disk
   end
 
   private
@@ -108,6 +113,10 @@ class Scraper
     end
   end
 
+  def scrape_queue_length
+    @scrape_queue.length
+  end
+
   def url_within_root url
     URI.parse(url).host == @root_url_host rescue false
   end
@@ -120,6 +129,10 @@ class Scraper
     if @found_emails.add? addr
       addr
     end
+  end
+
+  def add_seen_url url
+    @seen_urls.add? url
   end
 
   def add_urls links
@@ -138,7 +151,7 @@ class Scraper
     end
     return nil unless url_within_root link
     return nil if skip_url? link
-    if @seen_urls.add? link
+    if add_seen_url link
       puts "Adding url: #{link}"
       @scrape_queue.synchronize do
         @scrape_queue << link
@@ -148,7 +161,7 @@ class Scraper
       return nil
     end
   end
-    
+
   def scrape_next_page
     url = next_url
     raise NoMorePages.new if url.nil?
@@ -209,12 +222,93 @@ class Scraper
       true
     end
 
-
   end
+end
+
+module Threader
+
+  @@max_threads = 10
+
+  def initialize root_url
+    super
+    puts "Threader initializing: [#{@@max_threads}]"
+    @found_emails.extend MonitorMixin
+    @seen_urls.extend MonitorMixin
+    @scrape_queue.extend MonitorMixin
+    @scrape_thread = nil
+    @threads = []
+    start_threads
+  end
+
+  def scrape
+    @scrape_thread = Thread.new do 
+      loop do
+        # TODO: make sure none of the work
+        # is being done while we are saving
+        super
+      end
+    end
+    @scrape_thread.join
+    @found_emails.to_a
+  end
+
+  private
+
+  def add_email_address addr
+    @found_emails.synchronize do
+      super
+    end
+  end
+
+  def add_url url
+    @scrape_queue.synchronize do
+      super
+    end
+  end
+
+  def add_seen_url url
+    @seen_urls.synchronize do
+      super
+    end
+  end
+
+  def scrape_cycle
+    super
+    sleep 1
+  end
+
+  def start_threads
+    @@max_threads.times do
+      puts "Starting Thread"
+      @threads << Thread.new do
+        loop do
+          scrape_next_page_threaded
+          sleep 0.01
+        end
+      end
+    end
+  end
+
+  def scrape_next_page_threaded
+    begin
+      scrape_next_page
+    rescue NoMorePages
+      # previous model was single threaded and dependant
+      # on the Queue being empty when work was done.
+      # we may exhaust the queue .. for now suppress
+      # TODO: handle work being done ..
+      puts "Empty Queue"
+      sleep 1
+    end
+  end
+
 end
 
 
 class ProfileScraper < Scraper
+
+  prepend Threader
+
   class << self
     def should_scrape_emails? url
       # ends in integer
