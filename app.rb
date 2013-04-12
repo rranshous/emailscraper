@@ -64,10 +64,6 @@ class Nokogiri::HTML::Document
     else
       v2 = true
     end
-    if strict && v1 && !v2 && !addr.split('@')[-1].include?('.')
-      # hack on a .com .. wth
-      return _validate_email_address "#{addr}.com", true
-    end
     return addr if v1 && v2
     return nil
   end
