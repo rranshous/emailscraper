@@ -211,11 +211,13 @@ class ProfileScraper < Scraper
   class << self
     def should_scrape_emails? url
       # ends in integer
-      last = url.split('/').select{|p| !p.nil?}.last
+      pieces = url.split('/').select{|p| !p.nil?}
+      last = pieces.last
       ends_in_int = last.to_i.to_s == last
+      member_page = url.include?('member.php') || ends_in_int
       # one lvl off root
-      off_root = url.gsub(/\/$/,'').count('/') == 3
-      ends_in_int && off_root
+      #off_root = url.gsub(/\/$/,'').count('/') == 3
+      #ends_in_int && off_root
     end
   end
 end
