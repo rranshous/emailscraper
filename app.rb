@@ -7,6 +7,10 @@ require 'httparty'
 require_relative 'email_address_validator/email_address_validator'
 require_relative 'email_address_validator/regexp.rb'
 
+class Requester
+  include HTTParty
+end
+
 class NoMorePages < Exception
 end
 
@@ -76,7 +80,8 @@ class Scraper
 
   def initialize root_url
     @root_url = root_url
-    @root_url_host ||= URI.parse(@root_url).host
+    @root_url_host = URI.parse(@root_url).host
+    @root_url_scheme = URI.parse(@root_url).scheme
     @scrape_queue = Queue.new
     @found_emails = Set.new
     @seen_urls = Set.new
@@ -98,11 +103,12 @@ class Scraper
   private
 
   def next_url
+    puts "Queue Length: #{@scrape_queue.length}"
     @scrape_queue.pop(true) rescue nil
   end
 
   def url_within_root url
-    URI.parse(url).host == @root_url_host
+    URI.parse(url).host == @root_url_host rescue false
   end
 
   def add_email_addresses addrs
@@ -121,7 +127,18 @@ class Scraper
 
   def add_url link
     return if link.nil?
+    begin
+      u = URI.parse(link)
+      u.host = @root_url_host unless u.host
+      u.scheme = @root_url_scheme unless u.scheme
+      link = u.to_s
+    rescue
+      return nil
+    end
+    return nil unless url_within_root link
+    return nil if skip_url? link
     if @seen_urls.add? link
+      puts "Adding url: #{link}"
       @scrape_queue << link
       return link
     else
@@ -136,8 +153,7 @@ class Scraper
     return false unless url_within_root url
     return false if skip_url? url
     links, email_addresses = self.class.scrape_page url
-    puts "Found Links: #{links}"
-    puts "Found Addresses: #{email_addresses}"
+    puts "Found Addresses: #{email_addresses}" unless email_addresses.empty?
     add_urls links
     add_email_addresses email_addresses
   end
@@ -161,8 +177,13 @@ class Scraper
         puts "skipping [#{url}]: probably not html"
         return nil
       end
-      response = HTTParty.get(url)
-      Nokogiri::HTML(response.body)
+      begin
+        response = Requester.get(url)
+        Nokogiri::HTML(response.body)
+      rescue => ex
+        puts "Exception getting page: #{ex}"
+        return nil
+      end
     end
 
     def scrape_page url
@@ -170,11 +191,44 @@ class Scraper
       puts "scraping page: #{url}"
       page = get_page url
       return [[], []] if page.nil? # nothing to see here
-      links, email_addresses = page.links, page.email_addresses
+      links = page.links
+      if should_scrape_emails? url
+        puts "Scraping for email addresses: #{url}"
+        email_addresses = page.email_addresses
+      else
+        email_addresses = []
+      end
       [links, email_addresses]
+    end
+
+    def should_scrape_emails? url
+      true
     end
   end
 end
 
-emails = Scraper.new(ARGV.shift).scrape
+class ProfileScraper < Scraper
+  class << self
+    def should_scrape_emails? url
+      # ends in integer
+      last = url.split('/').select{|p| !p.nil?}.last
+      ends_in_int = last.to_i.to_s == last
+      # one lvl off root
+      off_root = url.gsub(/\/$/,'').count('/') == 3
+      ends_in_int && off_root
+    end
+  end
+end
+
+
+root_url = ARGV.shift rescue nil
+proxy_host = ARGV.shift rescue nil
+proxy_port = ARGV.shift rescue nil
+if proxy_host && proxy_port
+  puts "Setting proxy: #{proxy_host} #{proxy_port}"
+  Requester.http_proxy proxy_host, proxy_port
+end
+
+
+emails = ProfileScraper.new(root_url).scrape
 puts "--output--\n#{emails.join("\n")}"
