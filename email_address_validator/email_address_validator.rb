@@ -111,7 +111,6 @@ require 'net/smtp'
 # At the moment, we've only got +debug+ level logging, but the plan is to get
 # more levels sorted out shortly, so you can see why validations succeed or
 # fail, for instance.
-#
 
 class EmailAddressValidator
 	class << self
