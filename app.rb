@@ -148,10 +148,10 @@ class Scraper
     
   def scrape_next_page
     url = next_url
-    puts "next url: #{url}"
     raise NoMorePages.new if url.nil?
     return false unless url_within_root url
     return false if skip_url? url
+    puts "Scraping next page: #{url}"
     links, email_addresses = self.class.scrape_page url
     puts "Found Addresses: #{email_addresses}" unless email_addresses.empty?
     add_urls links
@@ -215,6 +215,10 @@ class ProfileScraper < Scraper
       last = pieces.last
       ends_in_int = last.to_i.to_s == last
       member_page = url.include?('member.php') || ends_in_int
+      excluded = ['list','friends','tags','faqs',
+                  'casting','contests','pic','page']
+      off_limits = excluded.select{|e| pieces.include? e}.to_a.length > 0
+      member_page && !off_limits
       # one lvl off root
       #off_root = url.gsub(/\/$/,'').count('/') == 3
       #ends_in_int && off_root
