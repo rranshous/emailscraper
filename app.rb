@@ -44,10 +44,16 @@ class Nokogiri::HTML::Document
   end
   def email_addresses
     # TODO rescue / skip non email addresses
-    content.gsub(/\s*@\s/,'@').split(' ').map do |word|
-      valid = _validate_email_address word, false
-      _validate_email_address word, true if valid
-    end.compact.uniq
+    begin
+      _content = content.gsub(/\s*@\s/,'@') rescue content
+      _content.split(' ').map do |word|
+        valid = _validate_email_address word, false
+        _validate_email_address word, true if valid
+      end.compact.uniq
+    rescue => ex
+      puts "Exception parsing out email addresses: #{ex}"
+      []
+    end
   end
   def _validate_email_address addr, strict=true
     EmailAddressValidator.check_dns = false
